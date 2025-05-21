@@ -114,7 +114,7 @@ void concat_list(char* compile_cmd, char* prefix,const char** list) {
 
 int main() {
 
-	char compile_cmd[1024] = "gcc -o server";
+	char compile_cmd[1024] = "gcc -o cicd";
     concat_list(compile_cmd, "", src_files);
 	concat_list(compile_cmd, "-L", lib_dirs);
 	concat_list(compile_cmd, "-l",libraries);
@@ -137,10 +137,13 @@ int main() {
 				while (time_out < 100000) {
 					if(kill(server_pid,0)==0) {
 						time_out++;
+					} else {
+						break;
 					}
 					if(time_out > 10000){
 						kill(server_pid, SIGKILL);	
 					}
+					usleep(10000);
 				}
 				server_pid = -1;
 			}
@@ -148,7 +151,7 @@ int main() {
 			if (result==0) {
 				server_pid = fork();
 				if(server_pid==0){
-					execl("./server", "./server",NULL);
+					execl("./cicd", "./cicd",NULL);
 					perror("Failed to start server");
 				}else if(server_pid < 0){
 					perror("Failed to fork server");

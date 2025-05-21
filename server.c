@@ -6,38 +6,123 @@
 #include <sys/sendfile.h>
 #include <unistd.h>
 #include <sys/stat.h> 
+#include <stdlib.h>
+
+#define BUFFER_SIZE 4096
 
 int main() {
-    struct sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(8081);
-    addr.sin_addr.s_addr = INADDR_ANY;
+    int server_fd;
+    struct sockaddr_in address;
+    int opt = SO_REUSEADDR;
 
-    int s = socket(AF_INET, SOCK_STREAM,0);
-    if(bind(s,(struct sockaddr*)&addr,sizeof(addr))<0){
-        perror("socket creation failed");
-        return 1;
+    address.sin_family = AF_INET;
+    address.sin_port = htons(8081);
+    address.sin_addr.s_addr = INADDR_ANY;
+    
+    if((server_fd = socket(AF_INET, SOCK_STREAM,0)) == 0) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
     }
 
-    // check for errors
-    listen(s,10);
+    if(setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        perror("setsockopt SO_REUSEADDR");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
 
+    if(bind(server_fd,(struct sockaddr*)&address,sizeof(address))<0){
+        perror("socket creation failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+    
+    // check for errors
+    if(listen(server_fd,3)<0){
+        perror("listen");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    };
+    
     while(1) {
-        int client_fd = accept(s,0,0);
+        int client_fd = accept(server_fd,0,0);
         if(client_fd < 0) {
             perror("Accept failed");
             continue;
         }
+        
+        char buffer[BUFFER_SIZE] = {0};
+        ssize_t bytes_received = recv(client_fd,buffer,BUFFER_SIZE - 1,0);
+        if (bytes_received > 0) {
+            buffer[bytes_received] = '\0';
+        }
+        else if (bytes_received == 0) {
+            close(client_fd);
+            continue;
+        } else {
+            perror("Receive dfailed or connection closed");
+            close(client_fd);
+            continue;
+        }
+        
+        char* headers_end = strstr(buffer, "\r\n\r\n");
+        if(!headers_end) {
+            const char* bad_request = "HTTP/1.1 400 Bad Request\r\n\r\n";
+            send(client_fd, bad_request, strlen(bad_request),0);
+            close(client_fd);
+            continue;
+        }
 
-        char buffer[256] = {0};
-        recv(client_fd,buffer,256,0);
+        char method[10] = {0};
+        char path[256] = {0};
+        char body[4096] = {0};
+        sscanf(buffer, "%s %s", method, path);
 
+        size_t header_len = (headers_end - buffer) + 4;
+
+        char* content_length_str_start = strstr(buffer, "Content-Length:");
+        long content_length = 0;
+        if(content_length_str_start) {
+            content_length = atol(content_length_str_start + strlen("Content-Length:"));
+        }
+
+        size_t body_bytes_received = 0;
+
+        // copy any part of the body already in the buffer
+        if(bytes_received > header_len) {
+            size_t initial_body_cunk_len = bytes_received - header_len;
+            if(initial_body_cunk_len > content_length) {
+                initial_body_cunk_len = content_length;
+            }
+            memcpy(body, headers_end + 4, initial_body_cunk_len);
+            body_bytes_received += initial_body_cunk_len;
+        }
+
+        // remaining bobdy data if content length > 0
+        while(body_bytes_received < content_length && body_bytes_received < sizeof(body) -1) {
+            ssize_t current_recv = recv(client_fd, body + body_bytes_received, content_length - body_bytes_received, 0);
+            if(current_recv <= 0) {
+                if(current_recv < 0) perror("Body recv failed");
+                break;
+            }
+            body_bytes_received += current_recv;
+        }
+        body[body_bytes_received] = '\0';
+        
+        printf("Method: %s, Path: %s\nBody: %s\n", method, path, body);
+        
+        if(strcmp(method, "POST") == 0) {
+            printf("webhook triggered, executing command\n");
+            char *header = "HTTP/1.1 200 OK\r\n";
+            send(client_fd, header, strlen(header),0);
+            close(client_fd);
+            continue;
+        }
+        
         char* f = buffer + 5;
         char* end = strchr(f, ' ');
         if(end) *end = 0;
 
         printf("Request for file: %s\n", f);
-
         int open_fd = open(f, O_RDONLY);
         if(open_fd < 0) {
             const char* not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 14\r\n\r\nFile not found";
@@ -46,16 +131,16 @@ int main() {
             struct stat file_stat;
             fstat(open_fd, &file_stat);
             off_t file_size = file_stat.st_size;
-
+            
             char header[128];
             sprintf(header, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %ld\r\n\r\n", file_size);
             send(client_fd, header, strlen(header),0);
-
+            
             sendfile(client_fd,open_fd,0,file_size);
             close(open_fd);
         }
         close(client_fd);
     }    
-    close(s);
+    close(server_fd);
     return 0;
 }
