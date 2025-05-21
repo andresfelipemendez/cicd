@@ -148,6 +148,8 @@ int main() {
             if(sent_bytes < 0) {
                 perror("send failed for POST 202 response");
             }
+            close(client_fd);
+            continue;
         }
         
         char* f = buffer + 5;
