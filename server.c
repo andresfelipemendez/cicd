@@ -111,11 +111,43 @@ int main() {
         printf("Method: %s, Path: %s\nBody: %s\n", method, path, body);
         
         if(strcmp(method, "POST") == 0) {
-            printf("webhook triggered, executing command\n");
-            char *header = "HTTP/1.1 200 OK\r\n";
-            send(client_fd, header, strlen(header),0);
-            close(client_fd);
-            continue;
+
+            pid_t pid = fork();
+            if(pid == -1) {
+                perror("fork failed");
+            } else if(pid ==0) {
+                if(setsid() < 0) {
+                    perror("setsid failed in child");
+                    _exit(1);
+                }
+
+                const char *script_path = "/home/andres/development/cicd/buildserver.sh"; 
+                int dev_null_fd = open("/dev/null", O_RDWR);
+                if (dev_null_fd != -1) {
+                    dup2(dev_null_fd, STDIN_FILENO);
+                    dup2(dev_null_fd, STDOUT_FILENO);
+                    dup2(dev_null_fd, STDERR_FILENO);
+                    if (dev_null_fd > STDERR_FILENO) { // Don't close if it's one of 0,1,2 by chance
+                        close(dev_null_fd);
+                    }
+                } else {
+                    // Fallback if /dev/null can't be opened: just close them
+                    // This is important so the script doesn't hold onto pipes connected to the parent
+                    close(STDIN_FILENO);
+                    close(STDOUT_FILENO);
+                    close(STDERR_FILENO);
+                }
+                execlp("sh", "sh", "-c", script_path, (char *)NULL);
+                perror("execlp failed to run buildserver.sh");
+                _exit(127);
+            } 
+            
+            printf("Build script process launched with PID %d.\n", pid);
+            const char *response = "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            ssize_t sent_bytes = send(client_fd, response, strlen(response),0);
+            if(sent_bytes < 0) {
+                perror("send failed for POST 202 response");
+            }
         }
         
         char* f = buffer + 5;
